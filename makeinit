@@ -1,0 +1,8 @@
+compile: initksocket.c  
+	gcc -Wall -o initksocket initksocket.c libksocket.a
+
+run: compile
+	./initksocket
+
+clean: 
+	rm -rf initksocket 

@@ -1,0 +1,133 @@
+For the implementation of KTP sockets I have used the following data structures:
+Data Structures:
+    1. window (Defined in ksocket.h)
+typedef struct {
+    int base;
+    int arr[MAX_SEQ_NUM];
+    int size;
+} window;
+        ◦ int base: The starting (base) sequence number for the window.
+        ◦ int arr[MAX_SEQ_NUM]: Array storing the sequence numbers (or corresponding buffer indices) for packets currently in the window.
+        ◦ int size: The current size of the window (i.e., the number of messages that can be outstanding).
+    2. SHM (Shared Memory Structure, defined in ksocket.h)
+typedef struct {
+    int free;
+    pid_t pid;
+    int udp_socket_id;
+    char remote_ip[16];
+    uint16_t remote_port;
+    char send_buffer[MAX_WINDOW_SIZE][MAX_MESG_LENGTH];
+    char recv_buffer[MAX_WINDOW_SIZE][MAX_MESG_LENGTH];
+    int send_buffer_size;
+    int recv_buffer_size;
+    int len_send_buffer[MAX_WINDOW_SIZE];
+    int len_recv_buffer[MAX_WINDOW_SIZE];
+    int recv_seq_num;
+    int recv_buffer_valid[MAX_WINDOW_SIZE];
+    window swnd;
+    window rwnd;
+    int nospace;
+    time_t last_sent_time[MAX_WINDOW_SIZE];
+} SHM;
+        ◦ int free: Flag indicating if the socket entry is free (1) or allocated (0).
+        ◦ pid_t pid: Process ID of the process using this KTP socket.
+        ◦ int udp_socket_id: File descriptor for the associated UDP socket.
+        ◦ char remote_ip[16]: Remote IP address for the KTP connection.
+        ◦ uint16_t remote_port: Remote port number for the connection.
+        ◦ char send_buffer[MAX_WINDOW_SIZE][MAX_MESG_LENGTH]: Buffer for storing outgoing messages.
+        ◦ char recv_buffer[MAX_WINDOW_SIZE][MAX_MESG_LENGTH]: Buffer for storing incoming messages.
+        ◦ int send_buffer_size: Number of free slots available in the send buffer.
+        ◦ int len_send_buffer[MAX_WINDOW_SIZE]: Length of each message stored in the send buffer.
+        ◦ int len_recv_buffer[MAX_WINDOW_SIZE]: Length of each message stored in the receive buffer.
+        ◦ int recv_seq_num: Sequence number indicating the next message to be read from the receive buffer.
+        ◦ int recv_buffer_valid[MAX_WINDOW_SIZE]: Flags indicating whether the message in each buffer slot is valid.
+        ◦ window swnd: Sender window structure that tracks unacknowledged messages.
+        ◦ window rwnd: Receiver window structure that tracks expected sequence numbers and available buffer space.
+        ◦ int nospace: Flag that indicates if the receive buffer is full.
+        ◦ time_t last_sent_time[MAX_WINDOW_SIZE]: Timestamps for the last send time of each message in the send buffer.
+    3. SOCKET_info (Defined in ksocket.h)
+typedef struct {
+    int sock_id;
+    char ip_addr[16];
+    uint16_t port;
+    int err_no;
+} SOCKET_info;
+        ◦ int sock_id: UDP socket descriptor used for communication.
+        ◦ char ip_addr[16]: IP address used for binding the socket.
+        ◦ uint16_t port: Port number used for binding.
+        ◦ int err_no: Error number for error reporting during socket operations.
+Macros
+    • waitSem(s): A macro that performs a semaphore wait (decrement) operation using semop.
+    • signalSem(s): A macro that performs a semaphore signal (increment) operation using semop.
+
+Functions in ksocket.c:
+    1. get_shared_mem()
+        ◦ Retrieves and attaches the shared memory segments for the SM array and the SOCKET_info structure.
+        ◦ Obtains semaphore IDs and initializes semaphore operations used across the library.
+    2. find_free_entry()
+        ◦ Scans the SM array for an available (free) socket entry.
+        ◦ Returns the index of a free entry or -1 if none is available.
+    3. k_socket(int domain, int type, int protocol)
+        ◦ Creates a new KTP socket.
+        ◦ Validates that the socket type is SOCK_KTP.
+        ◦ Allocates a free entry in the shared memory (SM), signals the initksocket process to initialize the UDP socket, and sets initial parameters.
+        ◦ Returns the index of the allocated socket or -1 on failure.
+    4. k_bind(char src_ip[], uint16_t src_port, char dest_ip[], uint16_t dest_port)
+        ◦ Binds the KTP socket to a specified source IP and port.
+        ◦ Sets the destination IP and port in the SM entry.
+        ◦ Interacts with the initksocket process to perform the binding.
+        ◦ Returns 0 on success or -1 on failure.
+    5. k_sendto(int sockfd, const void buf, size_t len, int flags, const struct sockaddr dest_addr, socklen_t addrlen)
+        ◦ Sends data through the KTP socket.
+        ◦ Checks that the destination address matches the one bound to the socket.
+        ◦ Verifies available space in the send buffer.
+        ◦ Copies the message into the send buffer and updates the sender window.
+        ◦ Returns the number of bytes sent or -1 if an error occurs.
+    6. k_recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr src_addr, socklen_t addrlen)
+        ◦ Receives a message from the KTP socket.
+        ◦ Checks the receive buffer for a valid message.
+        ◦ Copies the message to the provided buffer and updates the receiver window.
+        ◦ Returns the message length or -1 if no message is available.
+    7. k_close(int sockfd)
+        ◦ Closes the KTP socket.
+        ◦ Marks the corresponding SM entry as free and cleans up associated resources.
+        ◦ Returns 0 on success.
+    8. dropMessage(float p)
+        ◦ Simulates packet loss by generating a random number.
+        ◦ Returns 1 (drop the message) if the generated number is less than p; otherwise, returns 0.
+Functions in initksocket.c:
+    1. init_shared_mem()
+        ◦ Initializes shared memory segments (SM and SOCKET_info) and obtains the necessary semaphore IDs.
+        ◦ Sets initial values for the SM entries and configures the semaphores.
+    2. cleanup_handler(int sig)
+        ◦ Handles termination signals (e.g., SIGINT).
+        ◦ Cleans up shared memory and semaphore resources before exiting.
+    3. Thread R (function *thread_R(void arg))
+        ◦ Monitors the UDP sockets for incoming messages using the select() system call.
+        ◦ Processes incoming messages: distinguishes between data messages, ACK messages, and special queries.
+        ◦ Updates the receiver window (rwnd) and sends appropriate ACKs back to the sender.
+    4. Thread S (function *thread_S(void arg))
+        ◦ Periodically wakes up (every T/2 seconds) to check for message timeouts.
+        ◦ Retransmits unacknowledged messages if their timeout has expired.
+        ◦ Sends new messages from the send buffer when space is available, updating send timestamps.
+    5. Thread GC (function *threadGC(void arg))
+        ◦ Acts as a garbage collector.
+        ◦ Periodically checks if the process associated with each KTP socket is still alive.
+        ◦ Cleans up and closes sockets that are no longer in use.
+    6. main()
+        ◦ Entry point of the initksocket process.
+        ◦ Initializes shared memory and semaphores, sets up the signal handler, and creates threads R, S, and GC.
+        ◦ Enters a loop to wait for and process socket creation or binding requests from user-level applications.
+Probability	Number of Transmissions
+0.05	234
+0.1	310
+0.15	361
+0.2	367
+0.25	401
+0.3	441
+0.35	469
+0.4	512
+0.45	583
+0.5	642
+
+

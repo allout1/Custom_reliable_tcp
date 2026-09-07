@@ -1,0 +1,10 @@
+all: user1 user2
+
+user1: user1.c 
+	gcc -Wall -o user1 -L. user1.c libksocket.a
+
+user2: user2.c 
+	gcc -Wall -o user2 -L. user2.c libksocket.a
+
+clean: 
+	rm -rf user1 user2
